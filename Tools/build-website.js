@@ -321,7 +321,7 @@ const scriptHtml = `
 
 const rootDir = dirname(__dirname);
 
-function markdownToHtml(md) {
+function markdownToHtml(md, templateParams) {
 	const MarkdownIt = require('markdown-it');
 
 	const markdownIt = new MarkdownIt({
@@ -366,7 +366,7 @@ function markdownToHtml(md) {
 			output = temp;
 
 			return output;
-		}
+		};
 
 		const createAnchorTokens = anchorName => {
 			const output = [];
@@ -393,27 +393,23 @@ function markdownToHtml(md) {
 			}
 
 			return output;
-		}
+		};
 
 		let insideHeading = false;
-		let processedFirstInline = false;
 		for (let i = 0; i < tokens.length; i++) {
 			const token = tokens[i];
 
 			if (token.type === 'heading_open') {
 				insideHeading = true;
-				processedFirstInline = false;
 				continue;
 			}
 
 			if (token.type === 'heading_close') {
 				insideHeading = false;
-				processedFirstInline = false;
 				continue;
 			}
 
 			if (insideHeading && token.type === 'inline') {
-				processedFirstInline = true;
 				const anchorName = headingTextToAnchorName(token.content, doneNames);
 				doneNames.push(anchorName);
 				const anchorTokens = createAnchorTokens(anchorName);
@@ -422,12 +418,12 @@ function markdownToHtml(md) {
 		}
 	});
 
-	return headerHtml + markdownIt.render(md) + scriptHtml + footerHtml;
+	return Mustache.render(headerHtml, templateParams) + markdownIt.render(md) + scriptHtml + footerHtml;
 }
 
 let tocMd_ = null;
 let tocHtml_ = null;
-const tocRegex_ = /<!-- TOC -->([^]*)<!-- TOC -->/
+const tocRegex_ = /<!-- TOC -->([^]*)<!-- TOC -->/;
 function tocMd() {
 	if (tocMd_) return tocMd_;
 	const md = fs.readFileSync(rootDir + '/README.md', 'utf8');
@@ -448,36 +444,41 @@ function tocHtml() {
 	return tocHtml_;
 }
 
-function renderMdToHtml(md, targetPath, params) {
+function renderMdToHtml(md, targetPath, templateParams) {
 	// Remove the header because it's going to be added back as HTML
 	md = md.replace(/# Joplin\n/, '');
 
-	params.baseUrl = 'https://joplinapp.org';
-	params.imageBaseUrl = params.baseUrl + '/images';
-	params.tocHtml = tocHtml();
+	templateParams.baseUrl = 'https://joplinapp.org';
+	templateParams.imageBaseUrl = templateParams.baseUrl + '/images';
+	templateParams.tocHtml = tocHtml();
 
 	const title = [];
 
-	if (!params.title) {
+	if (!templateParams.title) {
 		title.push('Joplin - an open source note taking and to-do application with synchronisation capabilities');
 	} else {
-		title.push(params.title);
+		title.push(templateParams.title);
 		title.push('Joplin');
 	}
 
-	params.pageTitle = title.join(' | ');
-	const html = Mustache.render(markdownToHtml(md), params);
+	templateParams.pageTitle = title.join(' | ');
+	const html = markdownToHtml(md, templateParams);
 	fs.writeFileSync(targetPath, html);
 }
 
-function renderFileToHtml(sourcePath, targetPath, params) {
+function renderFileToHtml(sourcePath, targetPath, templateParams) {
 	const md = fs.readFileSync(sourcePath, 'utf8');
-	return renderMdToHtml(md, targetPath, params);
+	return renderMdToHtml(md, targetPath, templateParams);
 }
 
 function makeHomePageMd() {
 	let md = fs.readFileSync(rootDir + '/README.md', 'utf8');
 	md = md.replace(tocRegex_, '');
+
+	// HACK: GitHub needs the \| or the inline code won't be displayed correctly inside the table,
+	// while MarkdownIt doesn't and will in fact display the \. So we remove it here.
+	md = md.replace(/\\\| bash/g, '| bash');
+
 	return md;
 }
 

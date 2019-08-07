@@ -9,10 +9,15 @@
 		}
 
 		#content {
+			/* Needs this in case the content contains elements with absolute positioning */
+			/* Without this they would just stay at a fixed position when scrolling */
+			position: relative;
 			overflow-y: auto;
-			height: 100%;
 			padding-left: 10px;
 			padding-right: 10px;
+
+			/* Note: the height is set via updateBodyHeight(). Setting it here to 100% */
+			/* won't work with some pages due to the position: relative */
 		}
 
 		mark {
@@ -205,15 +210,19 @@
 				elementIndex++;
 			}
 
+			const markKeywordOptions = {
+				each: onEachElement,
+			};
+
+			if ('separateWordSearch' in options) markKeywordOptions.separateWordSearch = options.separateWordSearch;
+
 			for (let i = 0; i < keywords.length; i++) {
 				let keyword = keywords[i];
 
 				markJsUtils.markKeyword(mark_, keyword, {
 					pregQuote: pregQuote,
 					replaceRegexDiacritics: replaceRegexDiacritics,
-				}, {
-					each: onEachElement,				
-				});
+				}, markKeywordOptions);
 			}
 
 			ipcProxySendToHost('setMarkerCount', elementIndex);
@@ -249,6 +258,7 @@
 		// The body element needs to have a fixed height for the content to be scrollable
 		function updateBodyHeight() {
 			document.getElementById('body').style.height = window.innerHeight + 'px';
+			document.getElementById('content').style.height = window.innerHeight + 'px';
 		}
 
 		contentElement.addEventListener('scroll', webviewLib.logEnabledEventHandler(e => {

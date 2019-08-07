@@ -4,15 +4,18 @@ const Folder = require('lib/models/Folder');
 const Note = require('lib/models/Note');
 const Tag = require('lib/models/Tag');
 const BaseItem = require('lib/models/BaseItem');
+const Resource = require('lib/models/Resource');
 const BaseModel = require('lib/BaseModel');
 const Setting = require('lib/models/Setting');
-const markdownUtils = require('lib/markdownUtils');
+const htmlUtils = require('lib/htmlUtils');
+const markupLanguageUtils = require('lib/markupLanguageUtils');
 const mimeUtils = require('lib/mime-utils.js').mime;
 const { Logger } = require('lib/logger.js');
 const md5 = require('md5');
 const { shim } = require('lib/shim');
 const HtmlToMd = require('lib/HtmlToMd');
 const urlUtils = require('lib/urlUtils.js');
+const ArrayUtils = require('lib/ArrayUtils.js');
 const { netUtils } = require('lib/net-utils');
 const { fileExtension, safeFileExtension, safeFilename, filename } = require('lib/path-utils');
 const ApiResponse = require('lib/services/rest/ApiResponse');
@@ -21,7 +24,6 @@ const { FoldersScreenUtils } = require('lib/folders-screen-utils.js');
 const uri2path = require('file-uri-to-path');
 
 class ApiError extends Error {
-
 	constructor(message, httpCode = 400) {
 		super(message);
 		this.httpCode_ = httpCode;
@@ -30,16 +32,30 @@ class ApiError extends Error {
 	get httpCode() {
 		return this.httpCode_;
 	}
-
 }
 
-class ErrorMethodNotAllowed extends ApiError { constructor(message = 'Method Not Allowed') { super(message, 405); } }
-class ErrorNotFound extends ApiError { constructor(message = 'Not Found') { super(message, 404); } }
-class ErrorForbidden extends ApiError {	constructor(message = 'Forbidden') { super(message, 403); } }
-class ErrorBadRequest extends ApiError { constructor(message = 'Bad Request') { super(message, 400); } }
+class ErrorMethodNotAllowed extends ApiError {
+	constructor(message = 'Method Not Allowed') {
+		super(message, 405);
+	}
+}
+class ErrorNotFound extends ApiError {
+	constructor(message = 'Not Found') {
+		super(message, 404);
+	}
+}
+class ErrorForbidden extends ApiError {
+	constructor(message = 'Forbidden') {
+		super(message, 403);
+	}
+}
+class ErrorBadRequest extends ApiError {
+	constructor(message = 'Bad Request') {
+		super(message, 400);
+	}
+}
 
 class Api {
-
 	constructor(token = null) {
 		this.token_ = token;
 		this.knownNounces_ = {};
@@ -55,7 +71,7 @@ class Api {
 		if (!path) return { callName: '', params: [] };
 
 		const pathParts = path.split('/');
-		const callSuffix = pathParts.splice(0,1)[0];
+		const callSuffix = pathParts.splice(0, 1)[0];
 		let callName = 'action_' + callSuffix;
 		return {
 			callName: callName,
@@ -77,7 +93,7 @@ class Api {
 			}
 			this.knownNounces_[query.nounce] = requestMd5;
 		}
-		
+
 		const request = {
 			method: method,
 			path: ltrimSlashes(path),
@@ -99,7 +115,7 @@ class Api {
 				return this.bodyJson_;
 			},
 			files: files,
-		}
+		};
 
 		let id = null;
 		let link = null;
@@ -143,19 +159,17 @@ class Api {
 	fields_(request, defaultFields) {
 		const query = request.query;
 		if (!query || !query.fields) return defaultFields;
-		const fields = query.fields.split(',').map(f => f.trim()).filter(f => !!f);
+		const fields = query.fields
+			.split(',')
+			.map(f => f.trim())
+			.filter(f => !!f);
 		return fields.length ? fields : defaultFields;
 	}
 
 	checkToken_(request) {
 		// For now, whitelist some calls to allow the web clipper to work
 		// without an extra auth step
-		const whiteList = [
-			[ 'GET', 'ping' ],
-			[ 'GET', 'tags' ],
-			[ 'GET', 'folders' ],
-			[ 'POST', 'notes' ],
-		];
+		const whiteList = [['GET', 'ping'], ['GET', 'tags'], ['GET', 'folders'], ['POST', 'notes']];
 
 		for (let i = 0; i < whiteList.length; i++) {
 			if (whiteList[i][0] === request.method && whiteList[i][1] === request.path) return;
@@ -175,9 +189,9 @@ class Api {
 
 		const getOneModel = async () => {
 			const model = await ModelClass.load(id);
-			if (!model) throw new ErrorNotFound();			
+			if (!model) throw new ErrorNotFound();
 			return model;
-		}
+		};
 
 		if (request.method === 'GET') {
 			if (id) {
@@ -305,7 +319,7 @@ class Api {
 
 				const filePath = Resource.fullPath(resource);
 				const buffer = await shim.fsDriver().readFile(filePath, 'Buffer');
-				
+
 				const response = new ApiResponse();
 				response.type = 'attachment';
 				response.body = buffer;
@@ -342,9 +356,8 @@ class Api {
 
 	async action_notes(request, id = null, link = null) {
 		this.checkToken_(request);
-		
+
 		if (request.method === 'GET') {
-			
 			if (link && link === 'tags') {
 				return Tag.tagsByNoteId(id);
 			} else if (link) {
@@ -369,7 +382,7 @@ class Api {
 
 			let note = await this.requestNoteToNote_(requestNote);
 
-			const imageUrls = markdownUtils.extractImageUrls(note.body);
+			const imageUrls = ArrayUtils.unique(markupLanguageUtils.extractImageUrls(note.markup_language, note.body));
 
 			this.logger().info('Request (' + requestId + '): Downloading images: ' + imageUrls.length);
 
@@ -379,7 +392,7 @@ class Api {
 
 			result = await this.createResourcesFromPaths_(result);
 			await this.removeTempFiles_(result);
-			note.body = this.replaceImageUrlsByResources_(note.body, result, imageSizes);
+			note.body = this.replaceImageUrlsByResources_(note.markup_language, note.body, result, imageSizes);
 
 			this.logger().info('Request (' + requestId + '): Saving note...');
 
@@ -408,10 +421,6 @@ class Api {
 		return this.defaultAction_(BaseModel.TYPE_NOTE, request, id, link);
 	}
 
-
-
-
-
 	// ========================================================================================================================
 	// UTILIY FUNCTIONS
 	// ========================================================================================================================
@@ -430,14 +439,46 @@ class Api {
 
 		if (requestNote.id) output.id = requestNote.id;
 
+		const baseUrl = requestNote.base_url ? requestNote.base_url : '';
+
 		if (requestNote.body_html) {
-			// Parsing will not work if the HTML is not wrapped in a top level tag, which is not guaranteed
-			// when getting the content from elsewhere. So here wrap it - it won't change anything to the final
-			// rendering but it makes sure everything will be parsed.
-			output.body = await this.htmlToMdParser().parse('<div>' + requestNote.body_html + '</div>', {
-				baseUrl: requestNote.base_url ? requestNote.base_url : '',
-				anchorNames: requestNote.anchor_names ? requestNote.anchor_names : [],
-			});
+			if (requestNote.convert_to === 'html') {
+				const style = await this.buildNoteStyleSheet_(requestNote.stylesheets);
+				const minify = require('html-minifier').minify;
+
+				const minifyOptions = {
+					// Remove all spaces and, especially, newlines from tag attributes, as that would
+					// break the rendering.
+					customAttrCollapse: /.*/,
+					// Need to remove all whitespaces because whitespace at a beginning of a line
+					// means a code block in Markdown.
+					collapseWhitespace: true,
+					minifyCSS: true,
+					maxLineLength: 300,
+				};
+
+				const uglifycss = require('uglifycss');
+				const styleString = uglifycss.processString(style.join('\n'), {
+					// Need to set a max length because Ace Editor takes forever
+					// to display notes with long lines.
+					maxLineLen: 200,
+				});
+
+				const styleTag = style.length ? '<style>' + styleString + '</style>' + '\n' : '';
+				output.body = styleTag + minify(requestNote.body_html, minifyOptions);
+				output.body = htmlUtils.prependBaseUrl(output.body, baseUrl);
+				output.markup_language = Note.MARKUP_LANGUAGE_HTML;
+			} else {
+				// Convert to Markdown
+				// Parsing will not work if the HTML is not wrapped in a top level tag, which is not guaranteed
+				// when getting the content from elsewhere. So here wrap it - it won't change anything to the final
+				// rendering but it makes sure everything will be parsed.
+				output.body = await this.htmlToMdParser().parse('<div>' + requestNote.body_html + '</div>', {
+					baseUrl: baseUrl,
+					anchorNames: requestNote.anchor_names ? requestNote.anchor_names : [],
+				});
+				output.markup_language = Note.MARKUP_LANGUAGE_MARKDOWN;
+			}
 		}
 
 		if (requestNote.parent_id) {
@@ -452,6 +493,10 @@ class Api {
 		if ('author' in requestNote) output.author = requestNote.author;
 		if ('user_updated_time' in requestNote) output.user_updated_time = Database.formatValue(Database.TYPE_INT, requestNote.user_updated_time);
 		if ('user_created_time' in requestNote) output.user_created_time = Database.formatValue(Database.TYPE_INT, requestNote.user_created_time);
+		if ('is_todo' in requestNote) output.is_todo = Database.formatValue(Database.TYPE_INT, requestNote.is_todo);
+		if ('markup_language' in requestNote) output.markup_language = Database.formatValue(Database.TYPE_INT, requestNote.markup_language);
+
+		if (!output.markup_language) output.markup_language = Note.MARKUP_LANGUAGE_MARKDOWN;
 
 		return output;
 	}
@@ -481,6 +526,32 @@ class Api {
 		return newImagePath;
 	}
 
+	async buildNoteStyleSheet_(stylesheets) {
+		if (!stylesheets) return [];
+
+		const output = [];
+
+		for (const stylesheet of stylesheets) {
+			if (stylesheet.type === 'text') {
+				output.push(stylesheet.value);
+			} else if (stylesheet.type === 'url') {
+				try {
+					const tempPath = Setting.value('tempDir') + '/' + md5(Math.random() + '_' + Date.now()) + '.css';
+					await shim.fetchBlob(stylesheet.value, { path: tempPath, maxRetry: 1 });
+					const text = await shim.fsDriver().readFile(tempPath);
+					output.push(text);
+					await shim.fsDriver().remove(tempPath);
+				} catch (error) {
+					this.logger().warn('Cannot download stylesheet at ' + stylesheet.value, error);
+				}
+			} else {
+				throw new Error('Invalid stylesheet type: ' + stylesheet.type);
+			}
+		}
+
+		return output;
+	}
+
 	async downloadImage_(url, allowFileProtocolImages) {
 		const tempDir = Setting.value('tempDir');
 
@@ -491,7 +562,7 @@ class Api {
 		if (!mimeUtils.fromFileExtension(fileExt)) fileExt = ''; // If the file extension is unknown - clear it.
 		if (fileExt) fileExt = '.' + fileExt;
 		let imagePath = tempDir + '/' + safeFilename(name) + fileExt;
-		if (await shim.fsDriver().exists(imagePath)) imagePath = tempDir + '/' + safeFilename(name) + '_' + md5(Math.random() + '_' + Date.now()).substr(0,10) + fileExt;
+		if (await shim.fsDriver().exists(imagePath)) imagePath = tempDir + '/' + safeFilename(name) + '_' + md5(Math.random() + '_' + Date.now()).substr(0, 10) + fileExt;
 
 		try {
 			if (isDataUrl) {
@@ -516,26 +587,26 @@ class Api {
 	}
 
 	async downloadImages_(urls, allowFileProtocolImages) {
-		const PromisePool = require('es6-promise-pool')
+		const PromisePool = require('es6-promise-pool');
 
 		const output = {};
+
+		const downloadOne = async url => {
+			const imagePath = await this.downloadImage_(url, allowFileProtocolImages);
+			if (imagePath) output[url] = { path: imagePath, originalUrl: url };
+		};
 
 		let urlIndex = 0;
 		const promiseProducer = () => {
 			if (urlIndex >= urls.length) return null;
 
 			const url = urls[urlIndex++];
+			return downloadOne(url);
+		};
 
-			return new Promise(async (resolve, reject) => {
-				const imagePath = await this.downloadImage_(url, allowFileProtocolImages);
-				if (imagePath) output[url] = { path: imagePath, originalUrl: url };
-				resolve();
-			});
-		}
-
-		const concurrency = 3
-		const pool = new PromisePool(promiseProducer, concurrency)
-		await pool.start()
+		const concurrency = 10;
+		const pool = new PromisePool(promiseProducer, concurrency);
+		await pool.start();
 
 		return output;
 	}
@@ -566,24 +637,33 @@ class Api {
 		}
 	}
 
-	replaceImageUrlsByResources_(md, urls, imageSizes) {
-		let output = md.replace(/(!\[.*?\]\()([^\s\)]+)(.*?\))/g, (match, before, imageUrl, after) => {
-			const urlInfo = urls[imageUrl];
-			if (!urlInfo || !urlInfo.resource) return before + imageUrl + after;
-			const imageSize = imageSizes[urlInfo.originalUrl];
-			const resourceUrl = Resource.internalUrl(urlInfo.resource);
+	replaceImageUrlsByResources_(markupLanguage, md, urls, imageSizes) {
+		const imageSizesIndexes = {};
 
-			if (imageSize && (imageSize.naturalWidth !== imageSize.width || imageSize.naturalHeight !== imageSize.height)) {
-				return '<img width="' + imageSize.width + '" height="' + imageSize.height + '" src="' + resourceUrl + '"/>';
-			} else {
-				return before + resourceUrl + after;
-			}
-		});
+		if (markupLanguage === Note.MARKUP_LANGUAGE_HTML) {
+			return htmlUtils.replaceImageUrls(md, imageUrl => {
+				const urlInfo = urls[imageUrl];
+				if (!urlInfo || !urlInfo.resource) return imageUrl;
+				return Resource.internalUrl(urlInfo.resource);
+			});
+		} else {
+			// eslint-disable-next-line no-useless-escape
+			return md.replace(/(!\[.*?\]\()([^\s\)]+)(.*?\))/g, (match, before, imageUrl, after) => {
+				const urlInfo = urls[imageUrl];
+				if (!urlInfo || !urlInfo.resource) return before + imageUrl + after;
+				if (!(urlInfo.originalUrl in imageSizesIndexes)) imageSizesIndexes[urlInfo.originalUrl] = 0;
+				const imageSize = imageSizes[urlInfo.originalUrl][imageSizesIndexes[urlInfo.originalUrl]];
+				imageSizesIndexes[urlInfo.originalUrl]++;
+				const resourceUrl = Resource.internalUrl(urlInfo.resource);
 
-		return output;
+				if (imageSize && (imageSize.naturalWidth !== imageSize.width || imageSize.naturalHeight !== imageSize.height)) {
+					return '<img width="' + imageSize.width + '" height="' + imageSize.height + '" src="' + resourceUrl + '"/>';
+				} else {
+					return before + resourceUrl + after;
+				}
+			});
+		}
 	}
-
-
 }
 
 module.exports = Api;

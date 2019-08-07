@@ -7,10 +7,14 @@
 
 	let browser_ = null;
 	if (typeof browser !== 'undefined') {
+		// eslint-disable-next-line no-undef
 		browser_ = browser;
+		// eslint-disable-next-line no-undef
 		browserSupportsPromises_ = true;
 	} else if (typeof chrome !== 'undefined') {
+		// eslint-disable-next-line no-undef
 		browser_ = chrome;
+		// eslint-disable-next-line no-undef
 		browserSupportsPromises_ = false;
 	}
 
@@ -29,7 +33,7 @@
 	}
 
 	function pageTitle() {
-		const titleElements = document.getElementsByTagName("title");
+		const titleElements = document.getElementsByTagName('title');
 		if (titleElements.length) return titleElements[0].text.trim();
 		return document.title.trim();
 	}
@@ -61,13 +65,19 @@
 		const output = {};
 		for (let i = 0; i < images.length; i++) {
 			const img = images[i];
-			const src = forceAbsoluteUrls ? absoluteUrl(img.src) : img.src;
-			output[src] = {
+			if (img.classList && img.classList.contains('joplin-clipper-hidden')) continue;
+
+			let src = imageSrc(img);
+			src = forceAbsoluteUrls ? absoluteUrl(src) : src;
+
+			if (!output[src]) output[src] = [];
+
+			output[src].push({
 				width: img.width,
 				height: img.height,
 				naturalWidth: img.naturalWidth,
 				naturalHeight: img.naturalHeight,
-			};
+			});
 		}
 		return output;
 	}
@@ -86,20 +96,29 @@
 		return output;
 	}
 
+	// In general we should use currentSrc because that's the image that's currently displayed,
+	// especially within <picture> tags or with srcset. In these cases there can be multiple
+	// sources and the best one is probably the one being displayed, thus currentSrc.
+	function imageSrc(image) {
+		if (image.currentSrc) return image.currentSrc;
+		return image.src;
+	}
+
 	// Cleans up element by removing all its invisible children (which we don't want to render as Markdown)
 	// And hard-code the image dimensions so that the information can be used by the clipper server to
 	// display them at the right sizes in the notes.
-	function cleanUpElement(element, imageSizes) {
+	function cleanUpElement(convertToMarkup, element, imageSizes, imageIndexes) {
 		const childNodes = element.childNodes;
+		const hiddenNodes = [];
 
-		for (let i = childNodes.length - 1; i >= 0; i--) {
+		for (let i = 0; i < childNodes.length; i++) {
 			const node = childNodes[i];
 			const nodeName = node.nodeName.toLowerCase();
 
 			const isHidden = node && node.classList && node.classList.contains('joplin-clipper-hidden');
 
 			if (isHidden) {
-				element.removeChild(node);
+				hiddenNodes.push(node);
 			} else {
 
 				// If the data-joplin-clipper-value has been set earlier, create a new DIV element
@@ -112,16 +131,24 @@
 				}
 
 				if (nodeName === 'img') {
-					node.src = absoluteUrl(node.src);
-					const imageSize = imageSizes[node.src];
-					if (imageSize) {
+					const src = absoluteUrl(imageSrc(node));
+					node.setAttribute('src', src);
+					if (!(src in imageIndexes)) imageIndexes[src] = 0;
+					const imageSize = imageSizes[src][imageIndexes[src]];
+					imageIndexes[src]++;
+					if (imageSize && convertToMarkup === 'markdown') {
 						node.width = imageSize.width;
 						node.height = imageSize.height;
 					}
 				}
 
-				cleanUpElement(node, imageSizes);
+				cleanUpElement(convertToMarkup, node, imageSizes, imageIndexes);
 			}
+		}
+
+		for (const hiddenNode of hiddenNodes) {
+			if (!hiddenNode.parentNode) continue;
+			hiddenNode.parentNode.removeChild(hiddenNode);
 		}
 	}
 
@@ -132,9 +159,11 @@
 	function preProcessDocument(element) {
 		const childNodes = element.childNodes;
 
-		for (let i = 0; i < childNodes.length; i++) {
+		for (let i = childNodes.length - 1; i >= 0; i--) {
 			const node = childNodes[i];
 			const nodeName = node.nodeName.toLowerCase();
+			const nodeParent = node.parentNode;
+			const nodeParentName = nodeParent ? nodeParent.nodeName.toLowerCase() : '';
 
 			let isVisible = node.nodeType === 1 ? window.getComputedStyle(node).display !== 'none' : true;
 			if (isVisible && ['script', 'noscript', 'style', 'select', 'option', 'button'].indexOf(nodeName) >= 0) isVisible = false;
@@ -148,7 +177,18 @@
 				if (isVisible) node.setAttribute('data-joplin-clipper-value', node.value);
 			}
 
-			if (!isVisible) {
+			if (nodeName === 'script') {
+				const a = node.getAttribute('type');
+				if (a && a.toLowerCase().indexOf('math/tex') >= 0) isVisible = true;
+			}
+
+			if (nodeName === 'source' && nodeParentName === 'picture') {
+				isVisible = false;
+			}
+
+			if (node.nodeType === 8) { // Comments are just removed since we can't add a class
+				node.parentNode.removeChild(node);
+			} else if (!isVisible) {
 				node.classList.add('joplin-clipper-hidden');
 			} else {
 				preProcessDocument(node);
@@ -171,6 +211,30 @@
 		}
 	}
 
+	// Given a document, return a <style> tag that contains all the styles
+	// required to render the page. Not currently used but could be as an
+	// option to clip pages as HTML.
+	function getStyleSheets(doc) {
+		const output = [];
+		for (var i=0; i<doc.styleSheets.length; i++) {
+			var sheet = doc.styleSheets[i];
+			try {
+				for (const cssRule of sheet.cssRules) {
+					output.push({ type: 'text', value: cssRule.cssText });
+				}
+			} catch (error) {
+				// Calling sheet.cssRules will throw a CORS error on Chrome if the stylesheet is on a different domain.
+				// In that case, we skip it and add it to the list of stylesheet URLs. These URls will be downloaded
+				// by the desktop application, since it doesn't have CORS restrictions.
+				console.info('Could not retrieve stylesheet now:', sheet.href);
+				console.info('It will downloaded by the main application.');
+				console.info(error);
+				output.push({ type: 'url', value: sheet.href });
+			}
+		}
+		return output;
+	}
+
 	function documentForReadability() {
 		// Readability directly change the passed document so clone it so as
 		// to preserve the original web page.
@@ -178,14 +242,7 @@
 	}
 
 	function readabilityProcess() {
-		var uri = {
-			spec: location.href,
-			host: location.host,
-			prePath: location.protocol + "//" + location.host,
-			scheme: location.protocol.substr(0, location.protocol.indexOf(":")),
-			pathBase: location.protocol + "//" + location.host + location.pathname.substr(0, location.pathname.lastIndexOf("/") + 1)
-		};
-
+		// eslint-disable-next-line no-undef
 		const readability = new Readability(documentForReadability());
 		const article = readability.parse();
 
@@ -194,13 +251,15 @@
 		return {
 			title: article.title,
 			body: article.content,
-		}
+		};
 	}
 
 	async function prepareCommandResponse(command) {
 		console.info('Got command: ' + command.name);
 
-		const clippedContentResponse = (title, html, imageSizes, anchorNames) => {
+		const convertToMarkup = command.preProcessFor ? command.preProcessFor : 'markdown';
+
+		const clippedContentResponse = (title, html, imageSizes, anchorNames, stylesheets) => {
 			return {
 				name: 'clippedContent',
 				title: title,
@@ -211,10 +270,13 @@
 				tags: command.tags || '',
 				image_sizes: imageSizes,
 				anchor_names: anchorNames,
-			};			
-		}
+				source_command: Object.assign({}, command),
+				convert_to: convertToMarkup,
+				stylesheets: stylesheets,
+			};
+		};
 
-		if (command.name === "simplifiedPageHtml") {
+		if (command.name === 'simplifiedPageHtml') {
 
 			let article = null;
 			try {
@@ -229,13 +291,13 @@
 			}
 			return clippedContentResponse(article.title, article.body, getImageSizes(document), getAnchorNames(document));
 
-		} else if (command.name === "isProbablyReaderable") {
+		} else if (command.name === 'isProbablyReaderable') {
 
+			// eslint-disable-next-line no-undef
 			const ok = isProbablyReaderable(documentForReadability());
-			console.info('isProbablyReaderable', ok);
 			return { name: 'isProbablyReaderable', value: ok };
 
-		} else if (command.name === "completePageHtml") {
+		} else if (command.name === 'completePageHtml') {
 
 			hardcodePreStyles(document);
 			preProcessDocument(document);
@@ -243,16 +305,23 @@
 			// directly on the document, so we make a copy of it first.
 			const cleanDocument = document.body.cloneNode(true);
 			const imageSizes = getImageSizes(document, true);
-			cleanUpElement(cleanDocument, imageSizes);
-			return clippedContentResponse(pageTitle(), cleanDocument.innerHTML, imageSizes, getAnchorNames(document));
+			const imageIndexes = {};
+			cleanUpElement(convertToMarkup, cleanDocument, imageSizes, imageIndexes);
 
-		} else if (command.name === "selectedHtml") {
+			const stylesheets = convertToMarkup === 'html' ? getStyleSheets(document) : null;
+			return clippedContentResponse(pageTitle(), cleanDocument.innerHTML, imageSizes, getAnchorNames(document), stylesheets);
+
+		} else if (command.name === 'selectedHtml') {
 
 			hardcodePreStyles(document);
-		    const range = window.getSelection().getRangeAt(0);
-		    const container = document.createElement('div');
-		    container.appendChild(range.cloneContents());
-		    return clippedContentResponse(pageTitle(), container.innerHTML, getImageSizes(document), getAnchorNames(document));
+			preProcessDocument(document);
+			const range = window.getSelection().getRangeAt(0);
+			const container = document.createElement('div');
+			container.appendChild(range.cloneContents());
+			const imageSizes = getImageSizes(document, true);
+			const imageIndexes = {};
+			cleanUpElement(convertToMarkup, container, imageSizes, imageIndexes);
+			return clippedContentResponse(pageTitle(), container.innerHTML, getImageSizes(document), getAnchorNames(document));
 
 		} else if (command.name === 'screenshot') {
 
@@ -271,19 +340,19 @@
 			const messageComp = document.createElement('div');
 
 			const messageCompWidth = 300;
-			messageComp.style.position = 'fixed'
-			messageComp.style.opacity = '0.95'
+			messageComp.style.position = 'fixed';
+			messageComp.style.opacity = '0.95';
 			messageComp.style.fontSize = '14px';
-			messageComp.style.width = messageCompWidth + 'px'
-			messageComp.style.maxWidth = messageCompWidth + 'px'
-			messageComp.style.border = '1px solid black'
-			messageComp.style.background = 'white'
+			messageComp.style.width = messageCompWidth + 'px';
+			messageComp.style.maxWidth = messageCompWidth + 'px';
+			messageComp.style.border = '1px solid black';
+			messageComp.style.background = 'white';
 			messageComp.style.color = 'black';
-			messageComp.style.top = '10px'
+			messageComp.style.top = '10px';
 			messageComp.style.textAlign = 'center';
-			messageComp.style.padding = '10px'
-			messageComp.style.left = Math.round(document.body.clientWidth / 2 - messageCompWidth / 2) + 'px'
-			messageComp.style.zIndex = overlay.style.zIndex + 1
+			messageComp.style.padding = '10px';
+			messageComp.style.left = Math.round(document.body.clientWidth / 2 - messageCompWidth / 2) + 'px';
+			messageComp.style.zIndex = overlay.style.zIndex + 1;
 
 			messageComp.textContent = 'Drag and release to capture a screenshot';
 
@@ -305,32 +374,32 @@
 			let draggingStartPos = null;
 			let selectionArea = {};
 
-			function updateSelection() {
+			const updateSelection = function() {
 				selection.style.left = selectionArea.x + 'px';
 				selection.style.top = selectionArea.y + 'px';
 				selection.style.width = selectionArea.width + 'px';
 				selection.style.height = selectionArea.height + 'px';
-			}
+			};
 
-			function setSelectionSizeFromMouse(event) {
+			const setSelectionSizeFromMouse = function(event) {
 				selectionArea.width = Math.max(1, event.clientX - draggingStartPos.x);
 				selectionArea.height = Math.max(1, event.clientY - draggingStartPos.y);
 				updateSelection();
-			}
+			};
 
-			function selection_mouseDown(event) {
-				selectionArea = { x: event.clientX, y: event.clientY, width: 0, height: 0 }
+			const selection_mouseDown = function(event) {
+				selectionArea = { x: event.clientX, y: event.clientY, width: 0, height: 0 };
 				draggingStartPos = { x: event.clientX, y: event.clientY };
 				isDragging = true;
 				updateSelection();
-			}
+			};
 
-			function selection_mouseMove(event) {
+			const selection_mouseMove = function(event) {
 				if (!isDragging) return;
 				setSelectionSizeFromMouse(event);
-			}
+			};
 
-			function selection_mouseUp(event) {
+			const selection_mouseUp = function(event) {
 				setSelectionSizeFromMouse(event);
 
 				isDragging = false;
@@ -365,7 +434,7 @@
 						api_base_url: command.api_base_url,
 					});
 				}, 100);
-			}
+			};
 
 			overlay.addEventListener('mousedown', selection_mouseDown);
 			overlay.addEventListener('mousemove', selection_mouseMove);
@@ -373,7 +442,7 @@
 
 			return {};
 
-		} else if (command.name === "pageUrl") {
+		} else if (command.name === 'pageUrl') {
 
 			let url = pageLocationOrigin() + location.pathname + location.search;
 			return clippedContentResponse(pageTitle(), url, getImageSizes(document), getAnchorNames(document));
